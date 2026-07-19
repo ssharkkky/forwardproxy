@@ -218,8 +218,10 @@ func TestM4G2ProtocolStatusGate(t *testing.T) {
 		}
 		return handlerErr.StatusCode
 	}
-	valid := connectUDPRequest(t, connectUDPURIPrefix+"example.com/53/")
-	if got := statusOf(valid); got != http.StatusNotImplemented {
+	valid := func() *http.Request {
+		return connectUDPRequest(t, connectUDPURIPrefix+"example.com/53/")
+	}
+	if got := statusOf(valid()); got != http.StatusNotImplemented {
 		t.Fatalf("valid pre-G3 request: got %d", got)
 	}
 	malformed := connectUDPRequest(t, connectUDPURIPrefix+"example.com/0/")
@@ -227,12 +229,12 @@ func TestM4G2ProtocolStatusGate(t *testing.T) {
 		t.Fatalf("malformed request: got %d", got)
 	}
 	h.AllowedPorts = []int{443}
-	if got := statusOf(valid); got != http.StatusForbidden {
+	if got := statusOf(valid()); got != http.StatusForbidden {
 		t.Fatalf("denied request: got %d", got)
 	}
 	h.AllowedPorts = nil
 	h.upstream = &url.URL{Scheme: "https", Host: "upstream.example"}
-	if got := statusOf(valid); got != http.StatusNotImplemented {
+	if got := statusOf(valid()); got != http.StatusNotImplemented {
 		t.Fatalf("upstream request: got %d", got)
 	}
 	if !isUnsupportedExtendedConnect(&http.Request{Method: http.MethodConnect, ProtoMajor: 3, Proto: "webtransport"}) {

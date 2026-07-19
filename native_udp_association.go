@@ -18,6 +18,7 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"go.uber.org/zap"
 )
 
 var (
@@ -49,11 +50,13 @@ type connectUDPAssociation struct {
 	stream      connectUDPDatagramStream
 	udp         net.Conn
 	idleTimeout time.Duration
+	logger      *zap.Logger
 	counters    connectUDPAssociationCounters
 }
 
 func (h *Handler) serveConnectUDP(w http.ResponseWriter, r *http.Request) error {
 	target, err := parseConnectUDPTarget(r)
+	redactConnectUDPRequest(r)
 	if err != nil {
 		return caddyhttp.Error(http.StatusBadRequest, errConnectUDPMalformed)
 	}
@@ -106,8 +109,10 @@ func (h *Handler) serveConnectUDP(w http.ResponseWriter, r *http.Request) error 
 		stream:      stream,
 		udp:         udp,
 		idleTimeout: idleTimeout,
+		logger:      h.logger,
 	}
 	_ = association.run(r.Context())
+	association.logEvent("closed", 1, 0)
 	return nil
 }
 
@@ -232,21 +237,21 @@ func (a *connectUDPAssociation) pumpH3ToUDP(ctx context.Context, activity chan<-
 	for count := 1; ; count++ {
 		datagram, err := a.stream.ReceiveDatagram(ctx)
 		if err != nil {
-			a.counters.h3ReadError.Add(1)
+			a.countEvent(&a.counters.h3ReadError, "h3_read_error", 0)
 			return err
 		}
 		payload, err := decodeConnectUDPDatagram(datagram)
 		if err != nil || len(payload) > connectUDPMaxUDPPayload {
-			a.counters.malformedContext.Add(1)
+			a.countEvent(&a.counters.malformedContext, "malformed_context", len(datagram))
 			continue
 		}
 		n, err := a.udp.Write(payload)
 		if err != nil {
-			a.counters.udpWriteError.Add(1)
+			a.countEvent(&a.counters.udpWriteError, "udp_write_error", len(payload))
 			return err
 		}
 		if n != len(payload) {
-			a.counters.udpWriteError.Add(1)
+			a.countEvent(&a.counters.udpWriteError, "udp_short_write", len(payload))
 			return io.ErrShortWrite
 		}
 		notifyConnectUDPActivity(activity)
@@ -261,17 +266,17 @@ func (a *connectUDPAssociation) pumpUDPToH3(ctx context.Context, activity chan<-
 	for count := 1; ; count++ {
 		n, err := a.udp.Read(buffer)
 		if err != nil {
-			a.counters.udpReadError.Add(1)
+			a.countEvent(&a.counters.udpReadError, "udp_read_error", 0)
 			return err
 		}
 		datagram := encodeConnectUDPDatagram(buffer[:n])
 		if err := a.stream.SendDatagram(datagram); err != nil {
 			var tooLarge *quic.DatagramTooLargeError
 			if errors.As(err, &tooLarge) {
-				a.counters.oversize.Add(1)
+				a.countEvent(&a.counters.oversize, "oversize", len(datagram))
 				continue
 			}
-			a.counters.h3WriteError.Add(1)
+			a.countEvent(&a.counters.h3WriteError, "h3_write_error", len(datagram))
 			return err
 		}
 		notifyConnectUDPActivity(activity)
@@ -291,6 +296,30 @@ func notifyConnectUDPActivity(activity chan<- struct{}) {
 	case activity <- struct{}{}:
 	default:
 	}
+}
+
+func (a *connectUDPAssociation) countEvent(
+	counter *atomic.Uint64,
+	reason string,
+	bytes int,
+) {
+	count := counter.Add(1)
+	if count&(count-1) == 0 {
+		a.logEvent(reason, count, bytes)
+	}
+}
+
+func (a *connectUDPAssociation) logEvent(reason string, count uint64, bytes int) {
+	if a.logger == nil {
+		return
+	}
+	a.logger.Debug(
+		"connect-udp association event",
+		zap.Uint64("association_id", a.id),
+		zap.String("reason", reason),
+		zap.Uint64("count", count),
+		zap.Int("bytes", bytes),
+	)
 }
 
 var _ connectUDPDatagramStream = (*http3.Stream)(nil)

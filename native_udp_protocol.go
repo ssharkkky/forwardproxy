@@ -29,6 +29,8 @@ type connectUDPTarget struct {
 	hostPort string
 }
 
+const connectUDPRedactedPath = "/.well-known/masque/udp/redacted/0/"
+
 type targetPolicyFailureKind uint8
 
 const (
@@ -132,6 +134,18 @@ func parseConnectUDPTarget(r *http.Request) (connectUDPTarget, error) {
 		port:     port,
 		hostPort: net.JoinHostPort(host, port),
 	}, nil
+}
+
+func redactConnectUDPRequest(r *http.Request) {
+	if r == nil || r.URL == nil {
+		return
+	}
+	r.URL.Path = connectUDPRedactedPath
+	r.URL.RawPath = ""
+	r.URL.RawQuery = ""
+	r.URL.ForceQuery = false
+	r.URL.Fragment = ""
+	r.RequestURI = connectUDPRedactedPath
 }
 
 func allASCIIDigits(value string) bool {

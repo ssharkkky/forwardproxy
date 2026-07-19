@@ -271,6 +271,12 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	nativeUDPRequest := isConnectUDPRequest(r)
+	if nativeUDPRequest {
+		// Keep the original URI available to probe-resistance and passthrough
+		// handlers, but never return it to Caddy's outer access-log middleware.
+		defer redactConnectUDPRequest(r)
+	}
 	// start by splitting the request host and port
 	reqHost, _, err := net.SplitHostPort(r.Host)
 	if err != nil {
@@ -284,7 +290,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	if h.ProbeResistance != nil && len(h.ProbeResistance.Domain) > 0 && reqHost == h.ProbeResistance.Domain {
 		return serveHiddenPage(w, authErr)
 	}
-	if h.Hosts.Match(r) && (r.Method != http.MethodConnect || authErr != nil) {
+	if h.Hosts.Match(r) && (r.Method != http.MethodConnect ||
+		authErr != nil && (!nativeUDPRequest || h.ProbeResistance != nil)) {
 		// Always pass non-CONNECT requests to hostname
 		// Pass CONNECT requests only if probe resistance is enabled and not authenticated
 		if h.shouldServePACFile(r) {
