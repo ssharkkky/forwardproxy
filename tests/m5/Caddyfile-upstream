@@ -1,0 +1,23 @@
+{
+	admin off
+	debug
+	grace_period 1s
+}
+
+https://127.0.0.1:{$M5_PROXY_PORT} {
+	tls internal
+	log {
+		output file {env.M5_ACCESS_LOG}
+		format json
+	}
+	route {
+		forward_proxy {
+			basic_auth m5-user m5-pass
+			upstream http://127.0.0.1:9
+			acl {
+				allow all
+			}
+		}
+		respond "camouflage"
+	}
+}
