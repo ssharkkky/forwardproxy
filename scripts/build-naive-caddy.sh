@@ -18,5 +18,6 @@ args=(
   --replace "github.com/caddyserver/caddy/v2=$CADDY_SOURCE_DIR"
 )
 
-"$xcaddy_bin" "${args[@]}"
+PATH="$(dirname "$go_bin"):$PATH" "$xcaddy_bin" "${args[@]}"
+test "$("$go_bin" version -m "$output" | awk 'NR == 1 {print $2}')" = "go$GO_VERSION"
 "$output" version

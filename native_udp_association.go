@@ -111,9 +111,20 @@ func (h *Handler) serveConnectUDP(w http.ResponseWriter, r *http.Request) error 
 		idleTimeout: idleTimeout,
 		logger:      h.logger,
 	}
-	_ = association.run(r.Context())
-	association.logEvent("closed", 1, 0)
+	associationResult := association.run(r.Context())
+	association.logEvent(connectUDPAssociationCloseReason(associationResult), 1, 0)
 	return nil
+}
+
+func connectUDPAssociationCloseReason(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "idle_expired"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	default:
+		return "closed"
+	}
 }
 
 func (h *Handler) dialConnectUDPTarget(ctx context.Context, target resolvedTarget) (net.Conn, error) {

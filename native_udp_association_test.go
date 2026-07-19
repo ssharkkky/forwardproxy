@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -239,6 +240,18 @@ func TestConnectUDPAdmissionLimits(t *testing.T) {
 	defer h.connectUDPMu.Unlock()
 	if h.connectUDPActive != 0 || len(h.connectUDPByClient) != 0 {
 		t.Fatalf("admission leak: active=%d clients=%v", h.connectUDPActive, h.connectUDPByClient)
+	}
+}
+
+func TestConnectUDPAssociationCloseReason(t *testing.T) {
+	if got := connectUDPAssociationCloseReason(context.DeadlineExceeded); got != "idle_expired" {
+		t.Fatalf("deadline reason: %q", got)
+	}
+	if got := connectUDPAssociationCloseReason(context.Canceled); got != "canceled" {
+		t.Fatalf("cancellation reason: %q", got)
+	}
+	if got := connectUDPAssociationCloseReason(io.EOF); got != "closed" {
+		t.Fatalf("generic close reason: %q", got)
 	}
 }
 

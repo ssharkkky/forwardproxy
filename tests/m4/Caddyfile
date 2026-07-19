@@ -1,0 +1,23 @@
+{
+	admin off
+	debug
+	grace_period 1s
+}
+
+https://127.0.0.1:19443 {
+	tls internal
+	log {
+		output file {env.M4_ACCESS_LOG}
+		format json
+	}
+	route {
+		forward_proxy {
+			basic_auth test pass
+			acl {
+				allow 127.0.0.1/32 ::1/128
+				allow all
+			}
+		}
+		respond "camouflage"
+	}
+}
