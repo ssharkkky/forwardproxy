@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ssharkkky/caddy
-          ref: 2ff83e69c6a214a512017562c7419703f970912d
+          ref: cce894a8a0e987eb1722cf99729499bdaba6c38d
           path: caddy-patched
       - uses: actions/setup-go@v5
         with:
