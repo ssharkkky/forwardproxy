@@ -822,7 +822,8 @@ var bufferPool = sync.Pool{
 func isLocalhost(hostname string) bool {
 	return hostname == "localhost" ||
 		hostname == "127.0.0.1" ||
-		hostname == "::1"
+		hostname == "::1" ||
+		strings.HasSuffix(hostname, ".localhost")
 }
 
 type dialContexter interface {

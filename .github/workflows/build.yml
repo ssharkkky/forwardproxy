@@ -1,7 +1,7 @@
 name: Build
 on:
   push:
-    branches: [naive]
+    branches: [naive, codex/native-udp-server]
     paths-ignore: [README.md]
   release:
     types: [published]
@@ -17,9 +17,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: ^1.21.9
-      - run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
-      - run: ~/go/bin/xcaddy build --with github.com/caddyserver/forwardproxy@master=$PWD
+          go-version: 1.25.12
+      - run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.5
+      - run: ~/go/bin/xcaddy build v2.11.2 --with github.com/caddyserver/forwardproxy=$PWD
       - name: Pack naiveproxy assets
         run: |
           mkdir ${{ env.BUNDLE }}

@@ -183,7 +183,7 @@ func (c *caddyTestServer) redirServer() *caddyhttp.Server {
 
 func TestMain(m *testing.M) {
 	caddyForwardProxy = caddyTestServer{
-		addr: "127.0.19.84:1984",
+		addr: "proxy.localhost:1984",
 		root: "./test/forwardproxy",
 		tls:  true,
 		proxyHandler: &Handler{
@@ -193,7 +193,7 @@ func TestMain(m *testing.M) {
 	}
 
 	caddyForwardProxyAuth = caddyTestServer{
-		addr: "127.0.0.1:4891",
+		addr: "auth-proxy.localhost:4891",
 		root: "./test/forwardproxy",
 		tls:  true,
 		proxyHandler: &Handler{
@@ -204,7 +204,7 @@ func TestMain(m *testing.M) {
 	}
 
 	caddyHTTPForwardProxyAuth = caddyTestServer{
-		addr: "127.0.69.73:6973",
+		addr: "http-proxy.localhost:6973",
 		root: "./test/forwardproxy",
 		proxyHandler: &Handler{
 			PACPath:         defaultPACPath,
@@ -214,7 +214,7 @@ func TestMain(m *testing.M) {
 	}
 
 	caddyForwardProxyProbeResist = caddyTestServer{
-		addr: "127.0.88.88:8888",
+		addr: "probe-proxy.localhost:8888",
 		root: "./test/forwardproxy",
 		tls:  true,
 		proxyHandler: &Handler{
@@ -227,39 +227,39 @@ func TestMain(m *testing.M) {
 	}
 
 	caddyDummyProbeResist = caddyTestServer{
-		addr:          "127.0.99.99:9999",
+		addr:          "probe-origin.localhost:9999",
 		root:          "./test/forwardproxy",
 		tls:           true,
 		httpRedirPort: "9980",
 	}
 
 	caddyTestTarget = caddyTestServer{
-		addr: "127.0.64.51:6451",
+		addr: "target.localhost:6451",
 		root: "./test/index",
 	}
 
 	caddyHTTPTestTarget = caddyTestServer{
-		addr: "localhost:6480",
+		addr: "http-target.localhost:6480",
 		root: "./test/index",
 	}
 
 	caddyAuthedUpstreamEnter = caddyTestServer{
-		addr: "127.0.65.25:6585",
+		addr: "upstream-proxy.localhost:6585",
 		root: "./test/upstreamingproxy",
 		tls:  true,
 		proxyHandler: &Handler{
-			Upstream:        "https://test:pass@127.0.0.1:4891",
+			Upstream:        "https://test:pass@auth-proxy.localhost:4891",
 			AuthCredentials: [][]byte{EncodeAuthCredentials("upstreamtest", "upstreampass")},
 		},
 	}
 
 	caddyForwardProxyWhiteListing = caddyTestServer{
-		addr: "127.0.87.76:8776",
+		addr: "whitelist-proxy.localhost:8776",
 		root: "./test/forwardproxy",
 		tls:  true,
 		proxyHandler: &Handler{
 			ACL: []ACLRule{
-				{Subjects: []string{"127.0.64.51"}, Allow: true},
+				{Subjects: []string{"target.localhost"}, Allow: true},
 				{Subjects: []string{"all"}, Allow: false},
 			},
 			AllowedPorts: []int{6451},
@@ -267,7 +267,7 @@ func TestMain(m *testing.M) {
 	}
 
 	caddyForwardProxyBlackListing = caddyTestServer{
-		addr: "127.0.66.76:6676",
+		addr: "blacklist-proxy.localhost:6676",
 		root: "./test/forwardproxy",
 		tls:  true,
 		proxyHandler: &Handler{
@@ -280,7 +280,7 @@ func TestMain(m *testing.M) {
 	}
 
 	caddyForwardProxyNoBlacklistOverride = caddyTestServer{
-		addr:         "127.0.66.76:6679",
+		addr:         "default-acl-proxy.localhost:6679",
 		root:         "./test/forwardproxy",
 		tls:          true,
 		proxyHandler: &Handler{},
@@ -424,7 +424,12 @@ var testTransport = &http.Transport{
 		if err != nil {
 			return nil, err
 		}
-		return tls.Client(conn, &tls.Config{InsecureSkipVerify: true}), nil
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return tls.Client(conn, &tls.Config{InsecureSkipVerify: true, ServerName: host}), nil
 	},
 }
 
