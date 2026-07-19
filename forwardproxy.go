@@ -101,6 +101,7 @@ type Handler struct {
 
 	// overridden dialContext allows us to redirect requests to upstream proxy
 	dialContext func(ctx context.Context, network, address string) (net.Conn, error)
+	lookupIP    func(ctx context.Context, host string) ([]net.IPAddr, error)
 	upstream    *url.URL // address of upstream proxy
 
 	aclRules []aclRule
@@ -120,6 +121,9 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 // Provision ensures that h is set up properly before use.
 func (h *Handler) Provision(ctx caddy.Context) error {
 	h.logger = ctx.Logger(h)
+	if h.lookupIP == nil {
+		h.lookupIP = net.DefaultResolver.LookupIPAddr
+	}
 
 	if h.DialTimeout <= 0 {
 		h.DialTimeout = caddy.Duration(30 * time.Second)
@@ -294,6 +298,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	}
 
 	if r.Method == http.MethodConnect {
+		if isConnectUDPRequest(r) {
+			return h.serveConnectUDPProtocolGate(w, r)
+		}
+		if isUnsupportedExtendedConnect(r) {
+			return caddyhttp.Error(connectUDPUnsupportedStatus, errConnectUDPUnsupported)
+		}
 		if r.ProtoMajor == 2 || r.ProtoMajor == 3 {
 			if len(r.URL.Scheme) > 0 || len(r.URL.Path) > 0 {
 				return caddyhttp.Error(http.StatusBadRequest,
@@ -501,17 +511,12 @@ func (h Handler) servePacFile(w http.ResponseWriter, r *http.Request) error {
 // dialContextCheckACL enforces Access Control List and calls fp.DialContext
 func (h Handler) dialContextCheckACL(ctx context.Context, network, hostPort string) (net.Conn, error) {
 	var conn net.Conn
+	var err error
 
 	if network != "tcp" && network != "tcp4" && network != "tcp6" {
 		// return nil, &proxyError{S: "Network " + network + " is not supported", Code: http.StatusBadRequest}
 		return nil, caddyhttp.Error(http.StatusBadRequest,
 			fmt.Errorf("network %s is not supported", network))
-	}
-
-	host, port, err := net.SplitHostPort(hostPort)
-	if err != nil {
-		// return nil, &proxyError{S: err.Error(), Code: http.StatusBadRequest}
-		return nil, caddyhttp.Error(http.StatusBadRequest, err)
 	}
 
 	if h.upstream != nil {
@@ -524,41 +529,16 @@ func (h Handler) dialContextCheckACL(ctx context.Context, network, hostPort stri
 		return conn, nil
 	}
 
-	if !h.portIsAllowed(port) {
-		// return nil, &proxyError{S: "port " + port + " is not allowed", Code: http.StatusForbidden}
-		return nil, caddyhttp.Error(http.StatusForbidden,
-			fmt.Errorf("port %s is not allowed", port))
-	}
-
-match:
-	for _, rule := range h.aclRules {
-		if _, ok := rule.(*aclDomainRule); ok {
-			switch rule.tryMatch(nil, host) {
-			case aclDecisionDeny:
-				return nil, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("disallowed host %s", host))
-			case aclDecisionAllow:
-				break match
-			}
-		}
-	}
-
-	// in case IP was provided, net.LookupIP will simply return it
-	IPs, err := net.LookupIP(host)
-	if err != nil {
-		// return nil, &proxyError{S: fmt.Sprintf("Lookup of %s failed: %v", host, err),
-		// Code: http.StatusBadGateway}
-		return nil, caddyhttp.Error(http.StatusBadGateway,
-			fmt.Errorf("lookup of %s failed: %v", host, err))
+	host, port, _ := net.SplitHostPort(hostPort)
+	resolved, failure := h.resolveTargetCheckACL(ctx, hostPort)
+	if failure != nil {
+		return nil, legacyTargetPolicyError(failure, host, port)
 	}
 
 	// This is net.Dial's default behavior: if the host resolves to multiple IP addresses,
 	// Dial will try each IP address in order until one succeeds
-	for _, ip := range IPs {
-		if !h.hostIsAllowed(host, ip) {
-			continue
-		}
-
-		conn, err = h.dialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+	for _, address := range resolved.addresses {
+		conn, err := h.dialContext(ctx, network, address)
 		if err == nil {
 			return conn, nil
 		}
