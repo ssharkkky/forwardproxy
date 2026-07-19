@@ -13,7 +13,7 @@ https://127.0.0.1:{$M5_PROXY_PORT} {
 	route {
 		forward_proxy {
 			basic_auth m5-user m5-pass
-			ports 9
+			ports {$M5_ALLOWED_PORT}
 			acl {
 				allow all
 			}

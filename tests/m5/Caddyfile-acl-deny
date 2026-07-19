@@ -14,7 +14,8 @@ https://127.0.0.1:{$M5_PROXY_PORT} {
 		forward_proxy {
 			basic_auth m5-user m5-pass
 			acl {
-				deny 127.0.0.1/32 ::1/128
+				deny m5-policy.localhost
+				allow 127.0.0.1/32 ::1/128
 				allow all
 			}
 		}
