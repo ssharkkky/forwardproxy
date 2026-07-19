@@ -239,23 +239,6 @@ resolve:
 	return result, nil
 }
 
-func (h *Handler) serveConnectUDPProtocolGate(
-	w http.ResponseWriter,
-	r *http.Request,
-) error {
-	target, err := parseConnectUDPTarget(r)
-	if err != nil {
-		return caddyhttp.Error(http.StatusBadRequest, errConnectUDPMalformed)
-	}
-	if h.upstream != nil {
-		return caddyhttp.Error(connectUDPUnsupportedStatus, errConnectUDPUnsupported)
-	}
-	if _, failure := h.resolveTargetCheckACL(r.Context(), target.hostPort); failure != nil {
-		return caddyhttp.Error(failure.statusCode(), failure)
-	}
-	return caddyhttp.Error(connectUDPUnsupportedStatus, errConnectUDPUnsupported)
-}
-
 func legacyTargetPolicyError(failure *targetPolicyFailure, host, port string) error {
 	switch failure.kind {
 	case targetPolicyMalformed:

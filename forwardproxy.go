@@ -104,6 +104,15 @@ type Handler struct {
 	lookupIP    func(ctx context.Context, host string) ([]net.IPAddr, error)
 	upstream    *url.URL // address of upstream proxy
 
+	connectUDPMu              sync.Mutex
+	connectUDPActive          int
+	connectUDPByClient        map[string]int
+	connectUDPNextID          uint64
+	connectUDPMaxActive       int
+	connectUDPMaxClientActive int
+	connectUDPIdleTimeout     time.Duration
+	connectUDPDial            func(ctx context.Context, network, address string) (net.Conn, error)
+
 	aclRules []aclRule
 
 	// TODO: temporary/deprecated - we should try to reuse existing authentication modules instead!
@@ -123,6 +132,18 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	h.logger = ctx.Logger(h)
 	if h.lookupIP == nil {
 		h.lookupIP = net.DefaultResolver.LookupIPAddr
+	}
+	if h.connectUDPByClient == nil {
+		h.connectUDPByClient = make(map[string]int)
+	}
+	if h.connectUDPMaxActive <= 0 {
+		h.connectUDPMaxActive = connectUDPMaxAssociations
+	}
+	if h.connectUDPMaxClientActive <= 0 {
+		h.connectUDPMaxClientActive = connectUDPMaxPerClient
+	}
+	if h.connectUDPIdleTimeout <= 0 {
+		h.connectUDPIdleTimeout = connectUDPAssociationIdleTime
 	}
 
 	if h.DialTimeout <= 0 {
@@ -188,6 +209,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		DualStack: true,
 	}
 	h.dialContext = dialer.DialContext
+	h.connectUDPDial = dialer.DialContext
 	h.httpTransport.DialContext = func(ctx context.Context, network string, address string) (net.Conn, error) {
 		return h.dialContextCheckACL(ctx, network, address)
 	}
@@ -299,7 +321,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 
 	if r.Method == http.MethodConnect {
 		if isConnectUDPRequest(r) {
-			return h.serveConnectUDPProtocolGate(w, r)
+			return h.serveConnectUDP(w, r)
 		}
 		if isUnsupportedExtendedConnect(r) {
 			return caddyhttp.Error(connectUDPUnsupportedStatus, errConnectUDPUnsupported)

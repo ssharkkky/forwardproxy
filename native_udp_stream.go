@@ -16,13 +16,20 @@ type responseWriterUnwrapper interface {
 	Unwrap() http.ResponseWriter
 }
 
-// http3StreamFromResponseWriter follows only the standard Caddy/Go Unwrap
-// contract. It deliberately avoids reflection and unsafe access. Calling
-// HTTPStream takes ownership of the stream and flushes the response headers.
-func http3StreamFromResponseWriter(w http.ResponseWriter) (*http3.Stream, error) {
+func http3CapabilitiesFromResponseWriter(
+	w http.ResponseWriter,
+) (http3.HTTPStreamer, http3.Settingser, error) {
+	var streamer http3.HTTPStreamer
+	var settings http3.Settingser
 	for depth := 0; depth < 16 && w != nil; depth++ {
-		if streamer, ok := w.(http3.HTTPStreamer); ok {
-			return streamer.HTTPStream(), nil
+		if candidate, ok := w.(http3.HTTPStreamer); ok {
+			streamer = candidate
+		}
+		if candidate, ok := w.(http3.Settingser); ok {
+			settings = candidate
+		}
+		if streamer != nil && settings != nil {
+			return streamer, settings, nil
 		}
 		unwrapper, ok := w.(responseWriterUnwrapper)
 		if !ok {
@@ -34,5 +41,16 @@ func http3StreamFromResponseWriter(w http.ResponseWriter) (*http3.Stream, error)
 		}
 		w = next
 	}
-	return nil, errHTTP3StreamUnavailable
+	return nil, nil, errHTTP3StreamUnavailable
+}
+
+// http3StreamFromResponseWriter follows only the standard Caddy/Go Unwrap
+// contract. It deliberately avoids reflection and unsafe access. Calling
+// HTTPStream takes ownership of the stream and flushes the response headers.
+func http3StreamFromResponseWriter(w http.ResponseWriter) (*http3.Stream, error) {
+	streamer, _, err := http3CapabilitiesFromResponseWriter(w)
+	if err != nil {
+		return nil, err
+	}
+	return streamer.HTTPStream(), nil
 }

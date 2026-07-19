@@ -211,7 +211,7 @@ func TestM4G2ProtocolStatusGate(t *testing.T) {
 	}
 	statusOf := func(r *http.Request) int {
 		t.Helper()
-		err := h.serveConnectUDPProtocolGate(httptest.NewRecorder(), r)
+		err := h.serveConnectUDP(httptest.NewRecorder(), r)
 		var handlerErr caddyhttp.HandlerError
 		if !errors.As(err, &handlerErr) {
 			t.Fatalf("expected HandlerError, got %v", err)
