@@ -15,11 +15,19 @@ jobs:
       BUNDLE: caddy-forwardproxy-naive
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ssharkkky/caddy
+          ref: 2ff83e69c6a214a512017562c7419703f970912d
+          path: caddy-patched
       - uses: actions/setup-go@v5
         with:
           go-version: 1.25.12
       - run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.5
-      - run: ~/go/bin/xcaddy build v2.11.2 --with github.com/caddyserver/forwardproxy=$PWD
+      - run: >-
+          ~/go/bin/xcaddy build v2.11.2
+          --with github.com/caddyserver/forwardproxy=$PWD
+          --replace github.com/caddyserver/caddy/v2=$PWD/caddy-patched
       - name: Pack naiveproxy assets
         run: |
           mkdir ${{ env.BUNDLE }}

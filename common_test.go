@@ -66,6 +66,7 @@ type caddyTestServer struct {
 	root         string // expected to have index.html and pic.png
 	_            []string
 	proxyHandler *Handler
+	handlers     []caddyhttp.MiddlewareHandler
 	contents     map[string][]byte
 }
 
@@ -85,6 +86,7 @@ var (
 
 	caddyTestTarget     caddyTestServer // whitelisted by caddyForwardProxyWhiteListing
 	caddyHTTPTestTarget caddyTestServer // serves plain http on 6480
+	caddyH3DatagramEcho caddyTestServer
 )
 
 func (c *caddyTestServer) server() *caddyhttp.Server {
@@ -121,6 +123,11 @@ func (c *caddyTestServer) server() *caddyhttp.Server {
 		}
 		routes = append(routes, caddyhttp.Route{
 			HandlersRaw: []json.RawMessage{handlerJSON(c.proxyHandler)},
+		})
+	}
+	for _, handler := range c.handlers {
+		routes = append(routes, caddyhttp.Route{
+			HandlersRaw: []json.RawMessage{handlerJSON(handler)},
 		})
 	}
 	if c.root != "" {
@@ -286,6 +293,13 @@ func TestMain(m *testing.M) {
 		proxyHandler: &Handler{},
 	}
 
+	caddyH3DatagramEcho = caddyTestServer{
+		addr:     "h3-echo.localhost:9443",
+		root:     "./test/forwardproxy",
+		tls:      true,
+		handlers: []caddyhttp.MiddlewareHandler{h3DatagramEchoHandler{}},
+	}
+
 	// done configuring all the servers; now build the HTTP app
 	httpApp := caddyhttp.App{
 		HTTPPort: 1080, // use a high port to avoid permission issues
@@ -301,6 +315,7 @@ func TestMain(m *testing.M) {
 			"caddyForwardProxyWhiteListing":        caddyForwardProxyWhiteListing.server(),
 			"caddyForwardProxyBlackListing":        caddyForwardProxyBlackListing.server(),
 			"caddyForwardProxyNoBlacklistOverride": caddyForwardProxyNoBlacklistOverride.server(),
+			"caddyH3DatagramEcho":                  caddyH3DatagramEcho.server(),
 
 			// HTTP->HTTPS redirect simulation servers for those which have a redir port configured
 			"caddyForwardProxyProbeResist_redir": caddyForwardProxyProbeResist.redirServer(),
