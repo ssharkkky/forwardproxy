@@ -2,6 +2,7 @@
 	admin off
 	debug
 	grace_period 1s
+	auto_https disable_redirects
 }
 
 https://m5-proxy.localhost:{$M5_PROXY_PORT} {
