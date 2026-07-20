@@ -5,7 +5,10 @@
 	auto_https disable_redirects
 }
 
-https://m5-proxy.localhost:{$M5_PROXY_PORT} {
+# A forward proxy's ordinary CONNECT authority is the target, not the proxy
+# hostname. Bind the TLS listener without a Caddy Host matcher; the explicit
+# certificate still authenticates m5-proxy.localhost through SNI.
+https://:{$M5_PROXY_PORT} {
 	tls {env.M5_SERVER_CERT} {env.M5_SERVER_KEY}
 	log {
 		output file {env.M5_ACCESS_LOG}
