@@ -327,6 +327,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	}
 
 	if r.Method == http.MethodConnect {
+		paddingType, err := negotiateNaivePadding(r.Header)
+		if err != nil {
+			return caddyhttp.Error(http.StatusBadRequest, err)
+		}
+		setNaivePaddingResponseHeaders(w.Header(), r.Header, paddingType)
 		if isConnectUDPRequest(r) {
 			return h.serveConnectUDP(w, r)
 		}
@@ -339,27 +344,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 					fmt.Errorf("CONNECT request has :scheme and/or :path pseudo-header fields"))
 			}
 		}
-
 		// HTTP CONNECT Fast Open: Directly responds with a 200 OK
 		// before attempting to connect to origin to reduce response latency.
 		// We merely close the connection if Open fails.
 
-		// Creates a padding header with length in [30, 30+32)
-		paddingLen := rand.Intn(32) + 30
-		padding := make([]byte, paddingLen)
-		bits := rand.Uint64()
-		for i := 0; i < 16; i++ {
-			// Codes that won't be Huffman coded.
-			padding[i] = "!#$()+<>?@[]^`{}"[bits&15]
-			bits >>= 4
-		}
-		for i := 16; i < paddingLen; i++ {
-			padding[i] = '~'
-		}
-		w.Header().Set("Padding", string(padding))
-
 		w.WriteHeader(http.StatusOK)
-		err := http.NewResponseController(w).Flush()
+		err = http.NewResponseController(w).Flush()
 		if err != nil {
 			return caddyhttp.Error(http.StatusInternalServerError,
 				fmt.Errorf("ResponseWriter flush error: %v", err))
@@ -388,7 +378,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 			fallthrough
 		case 3:
 			defer r.Body.Close()
-			return dualStream(targetConn, r.Body, w, r.Header.Get("Padding") != "")
+			return dualStream(targetConn, r.Body, w, paddingType == naivePaddingVariant1)
 		}
 
 		panic("There was a check for http version, yet it's incorrect")
@@ -661,11 +651,63 @@ func serveHijack(w http.ResponseWriter, targetConn net.Conn) error {
 }
 
 const (
+	naivePaddingTypeRequestHeader = "Padding-Type-Request"
+	naivePaddingTypeReplyHeader   = "Padding-Type-Reply"
+
+	naivePaddingNone     = 0
+	naivePaddingVariant1 = 1
+
 	NoPadding        = 0
 	AddPadding       = 1
 	RemovePadding    = 2
 	NumFirstPaddings = 8
 )
+
+func negotiateNaivePadding(header http.Header) (int, error) {
+	values, requested := header[http.CanonicalHeaderKey(naivePaddingTypeRequestHeader)]
+	if !requested {
+		if header.Get("Padding") != "" {
+			return naivePaddingVariant1, nil
+		}
+		return naivePaddingNone, nil
+	}
+
+	for _, value := range values {
+		for _, candidate := range strings.Split(value, ",") {
+			switch strings.TrimSpace(candidate) {
+			case "1":
+				return naivePaddingVariant1, nil
+			case "0":
+				return naivePaddingNone, nil
+			default:
+				return 0, errors.New("invalid Naive padding type")
+			}
+		}
+	}
+	return 0, errors.New("no Naive padding type requested")
+}
+
+func setNaivePaddingResponseHeaders(response, request http.Header, paddingType int) {
+	// This random response header advertises legacy Variant1 support and also
+	// keeps the CONNECT response shape compatible with older Naive clients.
+	// CONNECT-UDP uses it only for shared proxy capability negotiation; UDP
+	// application datagrams are never padded by this TCP padding protocol.
+	paddingLen := rand.Intn(32) + 30
+	padding := make([]byte, paddingLen)
+	bits := rand.Uint64()
+	for i := 0; i < 16; i++ {
+		// Codes that won't be Huffman coded.
+		padding[i] = "!#$()+<>?@[]^`{}"[bits&15]
+		bits >>= 4
+	}
+	for i := 16; i < paddingLen; i++ {
+		padding[i] = '~'
+	}
+	response.Set("Padding", string(padding))
+	if _, requested := request[http.CanonicalHeaderKey(naivePaddingTypeRequestHeader)]; requested {
+		response.Set(naivePaddingTypeReplyHeader, strconv.Itoa(paddingType))
+	}
+}
 
 // Copies data target->clientReader and clientWriter->target, and flushes as needed
 // Returns when clientWriter-> target stream is done.
