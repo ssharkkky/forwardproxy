@@ -14,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -454,8 +455,89 @@ func runShutdown(ctx context.Context, c *client) error {
 	}
 }
 
+func runTCPPadding(ctx context.Context, c *client) error {
+	target, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return err
+	}
+	defer target.Close()
+	targetResult := make(chan error, 1)
+	go func() {
+		conn, err := target.Accept()
+		if err != nil {
+			targetResult <- err
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+		request := make([]byte, 1)
+		if _, err := io.ReadFull(conn, request); err != nil {
+			targetResult <- err
+			return
+		}
+		if request[0] != 'x' {
+			targetResult <- fmt.Errorf("unexpected TCP request byte")
+			return
+		}
+		_, err = conn.Write([]byte{'y'})
+		targetResult <- err
+	}()
+
+	stream, err := c.http3.OpenRequestStream(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeStream(stream)
+	req, err := http.NewRequest(http.MethodConnect, "https://"+target.Addr().String()+"/", nil)
+	if err != nil {
+		return err
+	}
+	if c.auth != "" {
+		req.Header.Set("Proxy-Authorization", c.auth)
+	}
+	req.Header.Set("Padding", "cover")
+	req.Header.Set("Padding-Type-Request", "1, 0")
+	if err := stream.SendRequestHeader(req); err != nil {
+		return err
+	}
+	// Match Naive's H3 fast-open ordering: send one Variant1 frame while the
+	// CONNECT response is still pending.
+	if _, err := stream.Write([]byte{0, 1, 0, 'x'}); err != nil {
+		return err
+	}
+	response, err := stream.ReadResponse()
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("TCP CONNECT returned %d", response.StatusCode)
+	}
+	if response.Header.Get("Padding-Type-Reply") != "1" || response.Header.Get("Padding") == "" {
+		return errors.New("TCP CONNECT response lacks negotiated padding headers")
+	}
+
+	header := make([]byte, 3)
+	if _, err := io.ReadFull(stream, header); err != nil {
+		return err
+	}
+	payloadSize := int(header[0])<<8 | int(header[1])
+	paddingSize := int(header[2])
+	framed := make([]byte, payloadSize+paddingSize)
+	if _, err := io.ReadFull(stream, framed); err != nil {
+		return err
+	}
+	if payloadSize != 1 || framed[0] != 'y' {
+		return errors.New("TCP CONNECT padded response mismatch")
+	}
+	if err := <-targetResult; err != nil {
+		return err
+	}
+	fmt.Println("M6_H3_TCP_PADDING_INTEROP_OK")
+	return nil
+}
+
 func main() {
-	mode := flag.String("mode", "matrix", "smoke, matrix, limits, idle, or shutdown")
+	mode := flag.String("mode", "matrix", "smoke, matrix, limits, idle, shutdown, or tcp-padding")
 	proxy := flag.String("proxy", "127.0.0.1:19443", "production Caddy address")
 	username := flag.String("username", "test", "proxy username")
 	password := flag.String("password", "pass", "proxy password")
@@ -490,6 +572,8 @@ func main() {
 		err = runIdle(ctx, c)
 	case "shutdown":
 		err = runShutdown(ctx, c)
+	case "tcp-padding":
+		err = runTCPPadding(ctx, c)
 	default:
 		err = fmt.Errorf("unknown mode %q", *mode)
 	}

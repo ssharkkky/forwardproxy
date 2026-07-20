@@ -62,6 +62,7 @@ test -x "$caddy_bin"
 
 cd "$repo_root"
 start_server
+"$client_bin" -mode tcp-padding -proxy "$proxy_address" -timeout 15s
 "$client_bin" -mode matrix -proxy "$proxy_address" -timeout 30s
 "$client_bin" -mode limits -proxy "$proxy_address" -timeout 30s
 "$client_bin" -mode idle -proxy "$proxy_address" -timeout 135s
