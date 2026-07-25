@@ -78,6 +78,34 @@ func testLoopbackAddress(address string) (string, error) {
 	return net.JoinHostPort("127.0.0.1", port), nil
 }
 
+func waitForTestTLS(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	loopback, err := testLoopbackAddress(address)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := tls.DialWithDialer(
+			&net.Dialer{Timeout: 250 * time.Millisecond},
+			"tcp",
+			loopback,
+			&tls.Config{InsecureSkipVerify: true, ServerName: host},
+		)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+		time.Sleep(25 * time.Millisecond)
+	}
+	return lastErr
+}
+
 var (
 	caddyForwardProxy            caddyTestServer
 	caddyForwardProxyAuth        caddyTestServer // requires auth
@@ -249,12 +277,12 @@ func TestMain(m *testing.M) {
 	}
 
 	caddyTestTarget = caddyTestServer{
-		addr: "target.localhost:6451",
+		addr: "127.0.0.1:6451",
 		root: "./test/index",
 	}
 
 	caddyHTTPTestTarget = caddyTestServer{
-		addr: "http-target.localhost:6480",
+		addr: "127.0.0.1:6480",
 		root: "./test/index",
 	}
 
@@ -274,7 +302,7 @@ func TestMain(m *testing.M) {
 		tls:  true,
 		proxyHandler: &Handler{
 			ACL: []ACLRule{
-				{Subjects: []string{"target.localhost"}, Allow: true},
+				{Subjects: []string{"127.0.0.1"}, Allow: true},
 				{Subjects: []string{"all"}, Allow: false},
 			},
 			AllowedPorts: []int{6451},
@@ -379,8 +407,21 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 
-	// wait server ready for tls dial
-	time.Sleep(500 * time.Millisecond)
+	for _, server := range []*caddyTestServer{
+		&caddyForwardProxy,
+		&caddyForwardProxyAuth,
+		&caddyForwardProxyProbeResist,
+		&caddyDummyProbeResist,
+		&caddyAuthedUpstreamEnter,
+		&caddyForwardProxyWhiteListing,
+		&caddyForwardProxyBlackListing,
+		&caddyForwardProxyNoBlacklistOverride,
+		&caddyH3DatagramEcho,
+	} {
+		if err := waitForTestTLS(server.addr); err != nil {
+			panic(err)
+		}
+	}
 
 	retCode := m.Run()
 
