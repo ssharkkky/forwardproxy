@@ -70,6 +70,14 @@ type caddyTestServer struct {
 	contents     map[string][]byte
 }
 
+func testLoopbackAddress(address string) (string, error) {
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", err
+	}
+	return net.JoinHostPort("127.0.0.1", port), nil
+}
+
 var (
 	caddyForwardProxy            caddyTestServer
 	caddyForwardProxyAuth        caddyTestServer // requires auth
@@ -200,7 +208,7 @@ func TestMain(m *testing.M) {
 	}
 
 	caddyForwardProxyAuth = caddyTestServer{
-		addr: "auth-proxy.localhost:4891",
+		addr: "localhost:4891",
 		root: "./test/forwardproxy",
 		tls:  true,
 		proxyHandler: &Handler{
@@ -255,7 +263,7 @@ func TestMain(m *testing.M) {
 		root: "./test/upstreamingproxy",
 		tls:  true,
 		proxyHandler: &Handler{
-			Upstream:        "https://test:pass@auth-proxy.localhost:4891",
+			Upstream:        "https://test:pass@localhost:4891",
 			AuthCredentials: [][]byte{EncodeAuthCredentials("upstreamtest", "upstreampass")},
 		},
 	}
@@ -430,12 +438,18 @@ func TestTheTest(t *testing.T) {
 var testTransport = &http.Transport{
 	ResponseHeaderTimeout: 2 * time.Second,
 	DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-		// always dial localhost for testing purposes
-		return new(net.Dialer).DialContext(ctx, network, addr)
+		loopback, err := testLoopbackAddress(addr)
+		if err != nil {
+			return nil, err
+		}
+		return new(net.Dialer).DialContext(ctx, network, loopback)
 	},
 	DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-		// always dial localhost for testing purposes
-		conn, err := new(net.Dialer).DialContext(ctx, network, addr)
+		loopback, err := testLoopbackAddress(addr)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := new(net.Dialer).DialContext(ctx, network, loopback)
 		if err != nil {
 			return nil, err
 		}

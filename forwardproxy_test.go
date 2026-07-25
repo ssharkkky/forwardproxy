@@ -30,14 +30,22 @@ import (
 )
 
 func dial(proxyAddr, httpProxyVer string, useTLS bool) (net.Conn, error) {
-	// always dial localhost for testing purposes
+	loopback, err := testLoopbackAddress(proxyAddr)
+	if err != nil {
+		return nil, err
+	}
 	if useTLS {
-		return tls.Dial("tcp", proxyAddr, &tls.Config{
+		host, _, err := net.SplitHostPort(proxyAddr)
+		if err != nil {
+			return nil, err
+		}
+		return tls.Dial("tcp", loopback, &tls.Config{
 			InsecureSkipVerify: true,
 			NextProtos:         []string{httpVersionToALPN[httpProxyVer]},
+			ServerName:         host,
 		})
 	}
-	return net.Dial("tcp", proxyAddr)
+	return net.Dial("tcp", loopback)
 }
 
 func getViaProxy(targetHost, resource, proxyAddr, httpProxyVer, proxyCredentials string, useTLS bool) (*http.Response, error) {

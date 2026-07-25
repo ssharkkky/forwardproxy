@@ -27,7 +27,11 @@ func openConnectUDPClientStream(
 	if err != nil {
 		t.Fatal(err)
 	}
-	qconn, err := quic.DialAddr(ctx, proxyAddress, &tls.Config{
+	loopback, err := testLoopbackAddress(proxyAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qconn, err := quic.DialAddr(ctx, loopback, &tls.Config{
 		InsecureSkipVerify: true,
 		NextProtos:         []string{http3.NextProtoH3},
 		ServerName:         host,

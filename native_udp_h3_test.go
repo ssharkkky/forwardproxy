@@ -74,9 +74,13 @@ func TestM4G1CaddyH3DatagramCapability(t *testing.T) {
 		NextProtos:         []string{http3.NextProtoH3},
 		ServerName:         "h3-echo.localhost",
 	}
+	loopback, err := testLoopbackAddress(caddyH3DatagramEcho.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
 	qconn, err := quic.DialAddr(
 		ctx,
-		caddyH3DatagramEcho.addr,
+		loopback,
 		tlsConf,
 		&quic.Config{EnableDatagrams: true},
 	)

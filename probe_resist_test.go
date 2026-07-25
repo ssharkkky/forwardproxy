@@ -112,7 +112,7 @@ func TestGETAuthWrongProbeResistRedir(t *testing.T) {
 			responseProbeResist, rPRerr := getViaProxy(caddyTestTarget.addr, resource, changePort(caddyForwardProxyProbeResist.addr, caddyForwardProxyProbeResist.httpRedirPort), httpProxyVer, wrongCreds, useTLS)
 			// get response from reference server without forwardproxy and compare them
 			responseReference, rRerr := getViaProxy(caddyTestTarget.addr, resource, changePort(caddyDummyProbeResist.addr, caddyDummyProbeResist.httpRedirPort), httpProxyVer, wrongCreds, useTLS)
-			if (rPRerr == nil && rRerr != nil) || (rPRerr != nil && rRerr == nil) {
+			if rPRerr != nil || rRerr != nil {
 				t.Fatalf("Reference error: %s. Probe resist error: %s", rRerr, rPRerr)
 			}
 			if responseProbeResist.StatusCode != responseReference.StatusCode {

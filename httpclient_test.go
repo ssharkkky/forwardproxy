@@ -25,15 +25,29 @@ func TestHttpClient(t *testing.T) {
 						t.Fatal(err)
 					}
 					dialer.DialTLS = func(network string, address string) (net.Conn, string, error) {
-						// always dial localhost for testing purposes
-						conn, err := tls.Dial(network, address, &tls.Config{
+						loopback, err := testLoopbackAddress(address)
+						if err != nil {
+							return nil, "", err
+						}
+						host, _, err := net.SplitHostPort(address)
+						if err != nil {
+							return nil, "", err
+						}
+						conn, err := tls.Dial(network, loopback, &tls.Config{
 							InsecureSkipVerify: true,
 							NextProtos:         []string{httpVersionToALPN[httpProxyVer]},
+							ServerName:         host,
 						})
 						if err != nil {
 							return nil, "", err
 						}
 						return conn, conn.ConnectionState().NegotiatedProtocol, nil
+					}
+					if dialer.ProxyURL.Scheme == "http" {
+						dialer.ProxyURL.Host, err = testLoopbackAddress(urlAddress)
+						if err != nil {
+							t.Fatal(err)
+						}
 					}
 
 					// always dial localhost for testing purposes
@@ -67,10 +81,18 @@ func TestHttpClientH2Multiplexing(t *testing.T) {
 		t.Fatal(err)
 	}
 	dialer.DialTLS = func(network string, address string) (net.Conn, string, error) {
-		// always dial localhost for testing purposes
-		conn, err := tls.Dial(network, address, &tls.Config{
+		loopback, err := testLoopbackAddress(address)
+		if err != nil {
+			return nil, "", err
+		}
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, "", err
+		}
+		conn, err := tls.Dial(network, loopback, &tls.Config{
 			InsecureSkipVerify: true,
 			NextProtos:         []string{httpVersionToALPN[httpProxyVer]},
+			ServerName:         host,
 		})
 		if err != nil {
 			return nil, "", err

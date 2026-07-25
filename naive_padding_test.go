@@ -97,7 +97,11 @@ func TestH3ConnectPaddingNegotiationAndRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	qconn, err := quic.DialAddr(ctx, caddyForwardProxyAuth.addr, &tls.Config{
+	loopback, err := testLoopbackAddress(caddyForwardProxyAuth.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qconn, err := quic.DialAddr(ctx, loopback, &tls.Config{
 		InsecureSkipVerify: true, // controlled local test fixture
 		NextProtos:         []string{http3.NextProtoH3},
 		ServerName:         proxyHost,
