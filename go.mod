@@ -4,6 +4,8 @@ go 1.25.0
 
 replace github.com/caddyserver/caddy/v2 => github.com/ssharkkky/caddy/v2 v2.11.3-0.20260901175121-3bcce47fa48f
 
+replace github.com/quic-go/quic-go => github.com/ssharkkky/quic-go v0.59.1-0.20260901171950-f84ad47630af
+
 require (
 	github.com/caddyserver/caddy/v2 v2.11.2
 	github.com/quic-go/quic-go v0.59.0
