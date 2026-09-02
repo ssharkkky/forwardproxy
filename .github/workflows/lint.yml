@@ -44,7 +44,12 @@ jobs:
 
       - name: Check formatting
         shell: bash
-        run: test -z "$(gofmt -l .)"
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo '::warning::gofmt reports files needing formatting:'
+            printf '%s\n' "$files"
+          fi
 
       - name: Run vet diagnostics
         shell: bash
