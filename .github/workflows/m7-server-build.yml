@@ -47,8 +47,11 @@ jobs:
           print(f"caddy={values['CADDY_PATCH_COMMIT']}")
           print(f"quic_go={values['QUIC_GO_COMMIT']}")
           PY
-          gh api "repos/ssharkkky/quic-go/commits/${{ steps.pins.outputs.quic_go }}" \
-            >/dev/null
+
+      - name: Confirm pinned quic-go commit exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/ssharkkky/quic-go/commits/${{ steps.pins.outputs.quic_go }}" >/dev/null
 
       - name: Check out pinned Caddy
         uses: actions/checkout@v4
