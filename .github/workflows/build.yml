@@ -1,46 +1,86 @@
 name: Build
+
 on:
   push:
-    branches: [naive, codex/native-udp-server]
-    paths-ignore: [README.md]
+    branches: [master]
+    paths-ignore: ["**.md"]
   release:
     types: [published]
-defaults:
-  run:
-    shell: bash
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
-  build_caddy_with_naive:
+  build:
+    name: Build pinned Caddy
     runs-on: ubuntu-22.04
-    env:
-      BUNDLE: caddy-forwardproxy-naive
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read and validate pins
+        id: pins
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          from pathlib import Path
+          values = {}
+          for line in Path("M7_TOOLCHAIN.lock").read_text().splitlines():
+              if line and not line.startswith("#"):
+                  key, value = line.split("=", 1)
+                  values[key] = value
+          for key in ("CADDY_PATCH_COMMIT", "QUIC_GO_COMMIT"):
+              if not re.fullmatch(r"[0-9a-f]{40}", values[key]):
+                  raise SystemExit(f"{key} is not a full commit SHA")
+          print(f"caddy={values['CADDY_PATCH_COMMIT']}")
+          print(f"quic_go={values['QUIC_GO_COMMIT']}")
+          PY
+
+      - name: Confirm pinned quic-go commit exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/ssharkkky/quic-go/commits/${{ steps.pins.outputs.quic_go }}" >/dev/null
+
+      - name: Check out pinned Caddy
+        uses: actions/checkout@v4
         with:
           repository: ssharkkky/caddy
-          ref: cce894a8a0e987eb1722cf99729499bdaba6c38d
-          path: caddy-patched
+          ref: ${{ steps.pins.outputs.caddy }}
+          path: _m7/caddy
+          fetch-depth: 0
+
       - uses: actions/setup-go@v5
         with:
-          go-version: 1.25.12
-      - run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.5
-      - run: >-
-          ~/go/bin/xcaddy build v2.11.2
-          --with github.com/caddyserver/forwardproxy=$PWD
-          --replace github.com/caddyserver/caddy/v2=$PWD/caddy-patched
-      - name: Pack naiveproxy assets
+          go-version: 1.26.0
+          cache: false
+
+      - name: Run tests
         run: |
-          mkdir ${{ env.BUNDLE }}
-          cp caddy LICENSE README.md ${{ env.BUNDLE }}
-          tar cJf ${{ env.BUNDLE }}.tar.xz ${{ env.BUNDLE }}
-          openssl sha256 ./caddy >sha256sum.txt
-          echo "SHA256SUM=$(cut -d' ' -f2 sha256sum.txt)" >>$GITHUB_ENV
+          go test ./...
+          if ! go vet ./...; then
+            echo '::warning::go vet reports the repository baseline diagnostics; see the job log'
+          fi
+          go test -race ./...
+
+      - name: Build pinned server
+        shell: bash
+        run: |
+          go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.5
+          mkdir -p _m7/dist
+          GO_BIN="$(command -v go)" \
+          XCADDY_BIN="$(go env GOPATH)/bin/xcaddy" \
+          CADDY_SOURCE_DIR="$GITHUB_WORKSPACE/_m7/caddy" \
+            scripts/build-m7-caddy.sh "$GITHUB_WORKSPACE/_m7/dist/caddy"
+          cp M7_TOOLCHAIN.lock _m7/dist/
+          tar cJf _m7/naive-caddy-m7-linux-amd64.tar.xz \
+            -C _m7/dist caddy M7_TOOLCHAIN.lock
+          sha256sum _m7/naive-caddy-m7-linux-amd64.tar.xz > _m7/dist/SHA256SUMS
+
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.BUNDLE }}.tar.xz caddy executable sha256 ${{ env.SHA256SUM }}
-          path: sha256sum.txt
-      - name: Upload caddy assets
-        if: ${{ github.event_name == 'release' }}
-        run: gh release upload "${GITHUB_REF##*/}"  ${{ env.BUNDLE }}.tar.xz --clobber
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: naive-caddy-m7-linux-amd64-legacy-build
+          path: _m7/dist/

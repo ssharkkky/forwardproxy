@@ -3,7 +3,7 @@ name: M7 pinned server build
 on:
   push:
     branches:
-      - naive
+      - master
     paths-ignore: ["**.md"]
   pull_request:
     paths:
