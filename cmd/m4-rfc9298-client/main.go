@@ -354,13 +354,13 @@ func runLimits(ctx context.Context, c *client) error {
 	}
 	defer echo.Close()
 	port := echo.LocalAddr().(*net.UDPAddr).Port
-	streams := make([]*http3.RequestStream, 0, 32)
+	streams := make([]*http3.RequestStream, 0, 128)
 	defer func() {
 		for _, stream := range streams {
 			closeStream(stream)
 		}
 	}()
-	for range 32 {
+	for range 128 {
 		stream, status, err := c.open(ctx, "127.0.0.1", port)
 		if err != nil || status != http.StatusOK {
 			return fmt.Errorf("association admission %d: status=%d err=%v", len(streams)+1, status, err)
@@ -373,7 +373,7 @@ func runLimits(ctx context.Context, c *client) error {
 	}
 	closeStream(rejected)
 	if status != http.StatusServiceUnavailable {
-		return fmt.Errorf("33rd association: got %d want 503", status)
+		return fmt.Errorf("129th association: got %d want 503", status)
 	}
 	closeStream(streams[0])
 	streams = streams[1:]

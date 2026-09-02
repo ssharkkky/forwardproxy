@@ -15,8 +15,8 @@ const (
 	connectUDPProtocol            = "connect-udp"
 	connectUDPURIPrefix           = "/.well-known/masque/udp/"
 	connectUDPContextID           = uint64(0)
-	connectUDPMaxAssociations     = 256
-	connectUDPMaxPerClient        = 32
+	connectUDPMaxAssociations     = 512
+	connectUDPMaxPerClient        = 128
 	connectUDPMaxUDPPayload       = 65535
 	connectUDPMaxPumpDatagrams    = 32
 	connectUDPResourceStatus      = http.StatusServiceUnavailable
