@@ -62,7 +62,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: 1.27.0
+          go-version: 1.26.0
           cache: false
 
       - name: Run forwardproxy tests
