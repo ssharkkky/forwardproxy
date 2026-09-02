@@ -2,9 +2,9 @@ module github.com/caddyserver/forwardproxy
 
 go 1.26.0
 
-replace github.com/caddyserver/caddy/v2 => github.com/ssharkkky/caddy/v2 v2.11.5-0.20260902170454-e111f21c85cd
+replace github.com/caddyserver/caddy/v2 => github.com/ssharkkky/caddy/v2 v2.11.5-0.20260902183742-bf677f58c75d
 
-replace github.com/quic-go/quic-go => github.com/ssharkkky/quic-go v0.62.1-0.20260902170459-af5cf06bcc93
+replace github.com/quic-go/quic-go => github.com/ssharkkky/quic-go v0.62.1-0.20260902183743-70dba6817bbb
 
 require (
 	github.com/caddyserver/caddy/v2 v2.11.2
