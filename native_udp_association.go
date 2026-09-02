@@ -68,7 +68,8 @@ func (h *Handler) serveConnectUDP(w http.ResponseWriter, r *http.Request) error 
 	if !ok {
 		return caddyhttp.Error(connectUDPResourceStatus, errConnectUDPResourceLimit)
 	}
-	defer release()
+	closeReason := "setup_failed"
+	defer func() { release(closeReason) }()
 
 	resolved, failure := h.resolveTargetCheckACL(r.Context(), target.hostPort)
 	if failure != nil {
@@ -112,6 +113,7 @@ func (h *Handler) serveConnectUDP(w http.ResponseWriter, r *http.Request) error 
 		logger:      h.logger,
 	}
 	associationResult := association.run(r.Context())
+	closeReason = connectUDPAssociationCloseReason(associationResult)
 	association.logEvent(connectUDPAssociationCloseReason(associationResult), 1, 0)
 	return nil
 }
@@ -156,7 +158,7 @@ func clientAddressKey(remoteAddress string) string {
 	return strings.ToLower(host)
 }
 
-func (h *Handler) acquireConnectUDP(client string) (uint64, func(), bool) {
+func (h *Handler) acquireConnectUDP(client string) (uint64, func(...string), bool) {
 	maxActive := h.connectUDPMaxActive
 	if maxActive <= 0 {
 		maxActive = connectUDPMaxAssociations
@@ -170,7 +172,13 @@ func (h *Handler) acquireConnectUDP(client string) (uint64, func(), bool) {
 	if h.connectUDPByClient == nil {
 		h.connectUDPByClient = make(map[string]int)
 	}
-	if h.connectUDPActive >= maxActive || h.connectUDPByClient[client] >= maxClient {
+	if h.connectUDPActive >= maxActive {
+		recordConnectUDPAdmission("global")
+		h.connectUDPMu.Unlock()
+		return 0, nil, false
+	}
+	if h.connectUDPByClient[client] >= maxClient {
+		recordConnectUDPAdmission("source")
 		h.connectUDPMu.Unlock()
 		return 0, nil, false
 	}
@@ -180,9 +188,16 @@ func (h *Handler) acquireConnectUDP(client string) (uint64, func(), bool) {
 	id := h.connectUDPNextID
 	h.connectUDPMu.Unlock()
 
+	recordConnectUDPAdmissionAccepted()
+	started := time.Now()
 	var once sync.Once
-	release := func() {
+	release := func(reason ...string) {
 		once.Do(func() {
+			closeReason := "request_end"
+			if len(reason) > 0 && reason[0] != "" {
+				closeReason = reason[0]
+			}
+			recordConnectUDPAdmissionReleased(closeReason, time.Since(started))
 			h.connectUDPMu.Lock()
 			h.connectUDPActive--
 			h.connectUDPByClient[client]--

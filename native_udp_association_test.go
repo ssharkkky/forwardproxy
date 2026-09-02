@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/quic-go/quic-go"
 )
 
@@ -241,6 +243,67 @@ func TestConnectUDPAdmissionLimits(t *testing.T) {
 	if h.connectUDPActive != 0 || len(h.connectUDPByClient) != 0 {
 		t.Fatalf("admission leak: active=%d clients=%v", h.connectUDPActive, h.connectUDPByClient)
 	}
+}
+
+func TestConnectUDPMetrics(t *testing.T) {
+	registry := prometheus.NewPedanticRegistry()
+	if err := initConnectUDPMetrics(registry); err != nil {
+		t.Fatalf("register metrics: %v", err)
+	}
+
+	h := Handler{connectUDPMaxActive: 2, connectUDPMaxClientActive: 1}
+	totalBefore := testutil.ToFloat64(connectUDPMetrics.associations)
+	sourceRejectionsBefore := testutil.ToFloat64(connectUDPMetrics.admissionRejections.WithLabelValues("source"))
+	idleClosuresBefore := testutil.ToFloat64(connectUDPMetrics.closures.WithLabelValues("idle_expired"))
+	_, release, ok := h.acquireConnectUDP("192.0.2.1")
+	if !ok {
+		t.Fatal("first association rejected")
+	}
+	if got := testutil.ToFloat64(connectUDPMetrics.active); got != 1 {
+		t.Fatalf("active associations = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(connectUDPMetrics.associations); got != totalBefore+1 {
+		t.Fatalf("total associations = %v, want %v", got, totalBefore+1)
+	}
+	if _, _, ok := h.acquireConnectUDP("192.0.2.1"); ok {
+		t.Fatal("source admission unexpectedly succeeded")
+	}
+	if got := testutil.ToFloat64(connectUDPMetrics.admissionRejections.WithLabelValues("source")); got != sourceRejectionsBefore+1 {
+		t.Fatalf("source rejections = %v, want %v", got, sourceRejectionsBefore+1)
+	}
+	_, releaseOther, ok := h.acquireConnectUDP("192.0.2.2")
+	if !ok {
+		t.Fatal("second source association rejected")
+	}
+	globalRejectionsBefore := testutil.ToFloat64(connectUDPMetrics.admissionRejections.WithLabelValues("global"))
+	if _, _, ok := h.acquireConnectUDP("192.0.2.3"); ok {
+		t.Fatal("global admission unexpectedly succeeded")
+	}
+	if got := testutil.ToFloat64(connectUDPMetrics.admissionRejections.WithLabelValues("global")); got != globalRejectionsBefore+1 {
+		t.Fatalf("global rejections = %v, want %v", got, globalRejectionsBefore+1)
+	}
+
+	release("idle_expired")
+	releaseOther("closed")
+	if got := testutil.ToFloat64(connectUDPMetrics.active); got != 0 {
+		t.Fatalf("active associations after release = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(connectUDPMetrics.closures.WithLabelValues("idle_expired")); got != idleClosuresBefore+1 {
+		t.Fatalf("idle closures = %v, want %v", got, idleClosuresBefore+1)
+	}
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() == "caddy_forward_proxy_connect_udp_association_duration_seconds" {
+			if len(family.Metric) != 1 || family.Metric[0].GetHistogram().GetSampleCount() == 0 {
+				t.Fatalf("duration histogram has no observation: %#v", family)
+			}
+			return
+		}
+	}
+	t.Fatal("duration histogram was not registered")
 }
 
 func TestConnectUDPAssociationCloseReason(t *testing.T) {

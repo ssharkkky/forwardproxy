@@ -130,6 +130,9 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 // Provision ensures that h is set up properly before use.
 func (h *Handler) Provision(ctx caddy.Context) error {
 	h.logger = ctx.Logger(h)
+	if err := initConnectUDPMetrics(ctx.GetMetricsRegistry()); err != nil {
+		return err
+	}
 	if h.lookupIP == nil {
 		h.lookupIP = net.DefaultResolver.LookupIPAddr
 	}
