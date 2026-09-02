@@ -1,0 +1,89 @@
+name: M7 pinned server build
+
+on:
+  push:
+    branches:
+      - codex/m7-caddy-bbr-build-script
+      - codex/m7-caddy-bbr-pin
+    paths-ignore: ["**.md"]
+  pull_request:
+    paths:
+      - "**.go"
+      - go.mod
+      - go.sum
+      - M7_TOOLCHAIN.lock
+      - scripts/build-m7-caddy.sh
+      - .github/workflows/m7-server-build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify pinned Caddy
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read and validate pins
+        id: pins
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          from pathlib import Path
+          values = {}
+          for line in Path("M7_TOOLCHAIN.lock").read_text().splitlines():
+              if line and not line.startswith("#"):
+                  key, value = line.split("=", 1)
+                  values[key] = value
+          for key in ("CADDY_PATCH_COMMIT", "QUIC_GO_COMMIT"):
+              if not re.fullmatch(r"[0-9a-f]{40}", values[key]):
+                  raise SystemExit(f"{key} is not a full commit SHA")
+          print(f"caddy={values['CADDY_PATCH_COMMIT']}")
+          print(f"quic_go={values['QUIC_GO_COMMIT']}")
+          PY
+          gh api "repos/ssharkkky/quic-go/commits/${{ steps.pins.outputs.quic_go }}" \
+            >/dev/null
+
+      - name: Check out pinned Caddy
+        uses: actions/checkout@v4
+        with:
+          repository: ssharkkky/caddy
+          ref: ${{ steps.pins.outputs.caddy }}
+          path: _m7/caddy
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.25.12
+          cache: false
+
+      - name: Run forwardproxy tests
+        run: |
+          go test ./...
+          go vet ./...
+          go test -race ./...
+
+      - name: Build pinned server
+        shell: bash
+        run: |
+          go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.5
+          mkdir -p _m7/dist
+          GO_BIN="$(command -v go)" \
+          XCADDY_BIN="$(go env GOPATH)/bin/xcaddy" \
+          CADDY_SOURCE_DIR="$GITHUB_WORKSPACE/_m7/caddy" \
+            scripts/build-m7-caddy.sh "$GITHUB_WORKSPACE/_m7/dist/caddy"
+          cp M7_TOOLCHAIN.lock _m7/dist/
+          tar cJf _m7/naive-caddy-m7-linux-amd64.tar.xz \
+            -C _m7/dist caddy M7_TOOLCHAIN.lock
+          sha256sum _m7/naive-caddy-m7-linux-amd64.tar.xz > _m7/dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: naive-caddy-m7-linux-amd64
+          path: _m7/dist/

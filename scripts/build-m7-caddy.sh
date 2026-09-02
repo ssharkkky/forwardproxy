@@ -32,6 +32,7 @@ trap 'rm -f "$module_info" "$module_list"' EXIT
 "$go_bin" version -m "$output" >"$module_info"
 "$output" list-modules >"$module_list"
 grep -F $'github.com/ssharkkky/quic-go\t' "$module_info"
+grep -F "$QUIC_GO_VERSION" "$module_info"
 grep -F 'github.com/caddyserver/caddy/v2' "$module_info"
 grep -F "$caddy_source" "$module_info"
 grep -F 'http.handlers.forward_proxy' "$module_list"
