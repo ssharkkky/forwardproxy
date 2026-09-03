@@ -6,6 +6,7 @@ package forwardproxy
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -16,6 +17,8 @@ import (
 var connectUDPMetrics = struct {
 	once                sync.Once
 	active              prometheus.Gauge
+	activePeak          prometheus.Gauge
+	activePeakValue     atomic.Uint64
 	associations        prometheus.Counter
 	admissionRejections *prometheus.CounterVec
 	closures            *prometheus.CounterVec
@@ -33,6 +36,12 @@ func initConnectUDPMetrics(registry *prometheus.Registry) error {
 			Subsystem: subsystem,
 			Name:      "connect_udp_active_associations",
 			Help:      "Current CONNECT-UDP associations admitted by forward proxy.",
+		})
+		connectUDPMetrics.activePeak = prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "connect_udp_active_associations_peak",
+			Help:      "Highest number of concurrent CONNECT-UDP associations since process start.",
 		})
 		connectUDPMetrics.associations = prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,
@@ -65,6 +74,7 @@ func initConnectUDPMetrics(registry *prometheus.Registry) error {
 
 	collectors := []prometheus.Collector{
 		connectUDPMetrics.active,
+		connectUDPMetrics.activePeak,
 		connectUDPMetrics.associations,
 		connectUDPMetrics.admissionRejections,
 		connectUDPMetrics.closures,
@@ -87,10 +97,19 @@ func recordConnectUDPAdmission(limit string) {
 	}
 }
 
-func recordConnectUDPAdmissionAccepted() {
+func recordConnectUDPAdmissionAccepted(active uint64) {
 	if connectUDPMetrics.active != nil {
 		connectUDPMetrics.active.Inc()
 		connectUDPMetrics.associations.Inc()
+		for {
+			peak := connectUDPMetrics.activePeakValue.Load()
+			if active <= peak || connectUDPMetrics.activePeakValue.CompareAndSwap(peak, active) {
+				if active > peak {
+					connectUDPMetrics.activePeak.Set(float64(active))
+				}
+				break
+			}
+		}
 	}
 }
 

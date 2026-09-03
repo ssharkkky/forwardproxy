@@ -186,9 +186,10 @@ func (h *Handler) acquireConnectUDP(client string) (uint64, func(...string), boo
 	h.connectUDPByClient[client]++
 	h.connectUDPNextID++
 	id := h.connectUDPNextID
+	active := uint64(h.connectUDPActive)
 	h.connectUDPMu.Unlock()
 
-	recordConnectUDPAdmissionAccepted()
+	recordConnectUDPAdmissionAccepted(active)
 	started := time.Now()
 	var once sync.Once
 	release := func(reason ...string) {

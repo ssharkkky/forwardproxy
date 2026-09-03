@@ -253,6 +253,7 @@ func TestConnectUDPMetrics(t *testing.T) {
 
 	h := Handler{connectUDPMaxActive: 2, connectUDPMaxClientActive: 1}
 	totalBefore := testutil.ToFloat64(connectUDPMetrics.associations)
+	peakBefore := testutil.ToFloat64(connectUDPMetrics.activePeak)
 	sourceRejectionsBefore := testutil.ToFloat64(connectUDPMetrics.admissionRejections.WithLabelValues("source"))
 	idleClosuresBefore := testutil.ToFloat64(connectUDPMetrics.closures.WithLabelValues("idle_expired"))
 	_, release, ok := h.acquireConnectUDP("192.0.2.1")
@@ -261,6 +262,9 @@ func TestConnectUDPMetrics(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(connectUDPMetrics.active); got != 1 {
 		t.Fatalf("active associations = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(connectUDPMetrics.activePeak); got < 1 {
+		t.Fatalf("active association peak = %v, want at least 1", got)
 	}
 	if got := testutil.ToFloat64(connectUDPMetrics.associations); got != totalBefore+1 {
 		t.Fatalf("total associations = %v, want %v", got, totalBefore+1)
@@ -279,6 +283,9 @@ func TestConnectUDPMetrics(t *testing.T) {
 	if _, _, ok := h.acquireConnectUDP("192.0.2.3"); ok {
 		t.Fatal("global admission unexpectedly succeeded")
 	}
+	if got, want := testutil.ToFloat64(connectUDPMetrics.activePeak), max(peakBefore, 2); got != want {
+		t.Fatalf("active association peak = %v, want %v", got, want)
+	}
 	if got := testutil.ToFloat64(connectUDPMetrics.admissionRejections.WithLabelValues("global")); got != globalRejectionsBefore+1 {
 		t.Fatalf("global rejections = %v, want %v", got, globalRejectionsBefore+1)
 	}
@@ -287,6 +294,9 @@ func TestConnectUDPMetrics(t *testing.T) {
 	releaseOther("closed")
 	if got := testutil.ToFloat64(connectUDPMetrics.active); got != 0 {
 		t.Fatalf("active associations after release = %v, want 0", got)
+	}
+	if got, want := testutil.ToFloat64(connectUDPMetrics.activePeak), max(peakBefore, 2); got != want {
+		t.Fatalf("active association peak after release = %v, want %v", got, want)
 	}
 	if got := testutil.ToFloat64(connectUDPMetrics.closures.WithLabelValues("idle_expired")); got != idleClosuresBefore+1 {
 		t.Fatalf("idle closures = %v, want %v", got, idleClosuresBefore+1)
