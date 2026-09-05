@@ -167,3 +167,57 @@ func TestH3ConnectPaddingNegotiationAndRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestH3ConnectRefusedTargetReturns502(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	target, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetAddress := target.Addr().String()
+	target.Close()
+	proxyHost, _, err := net.SplitHostPort(caddyForwardProxyAuth.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loopback, err := testLoopbackAddress(caddyForwardProxyAuth.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qconn, err := quic.DialAddr(ctx, loopback, &tls.Config{
+		InsecureSkipVerify: true, // controlled local fixture
+		NextProtos:         []string{http3.NextProtoH3}, ServerName: proxyHost,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer qconn.CloseWithError(0, "test complete")
+	transport := &http3.Transport{}
+	client := transport.NewClientConn(qconn)
+	stream, err := client.OpenRequestStream(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.CancelRead(0)
+	defer stream.CancelWrite(0)
+	req, err := http.NewRequest(http.MethodConnect, "https://"+targetAddress+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Proxy-Authorization", credentialsCorrect)
+	req.Header.Set(naivePaddingTypeRequestHeader, "1, 0")
+	if err := stream.SendRequestHeader(req); err != nil {
+		t.Fatal(err)
+	}
+	response, err := stream.ReadResponse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusBadGateway {
+		t.Fatalf("refused target response = %d, want 502", response.StatusCode)
+	}
+	if response.Header.Get(naivePaddingTypeReplyHeader) != "1" {
+		t.Fatal("failure response lost padding negotiation")
+	}
+}

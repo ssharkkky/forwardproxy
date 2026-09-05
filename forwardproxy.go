@@ -317,7 +317,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 			fmt.Errorf("unsupported HTTP major version: %d", r.ProtoMajor))
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	if !h.HideIP {
 		ctxHeader := make(http.Header)
 		for k, v := range r.Header {
@@ -347,17 +347,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 					fmt.Errorf("CONNECT request has :scheme and/or :path pseudo-header fields"))
 			}
 		}
-		// HTTP CONNECT Fast Open: Directly responds with a 200 OK
-		// before attempting to connect to origin to reduce response latency.
-		// We merely close the connection if Open fails.
-
-		w.WriteHeader(http.StatusOK)
-		err = http.NewResponseController(w).Flush()
-		if err != nil {
-			return caddyhttp.Error(http.StatusInternalServerError,
-				fmt.Errorf("ResponseWriter flush error: %v", err))
-		}
-
 		hostPort := r.URL.Host
 		if hostPort == "" {
 			hostPort = r.Host
@@ -373,6 +362,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 				fmt.Errorf("hostname %s is not allowed", r.URL.Hostname()))
 		}
 		defer targetConn.Close()
+
+		// RFC 9110: success confirms an established target connection. Flush
+		// before reading tunnel data, since the client may wait for this reply.
+		w.WriteHeader(http.StatusOK)
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			return caddyhttp.Error(http.StatusInternalServerError,
+				fmt.Errorf("ResponseWriter flush error: %v", err))
+		}
 
 		switch r.ProtoMajor {
 		case 1: // http1: hijack the whole flow
@@ -531,42 +528,48 @@ func (h Handler) servePacFile(w http.ResponseWriter, r *http.Request) error {
 }
 
 // dialContextCheckACL enforces Access Control List and calls fp.DialContext
-func (h Handler) dialContextCheckACL(ctx context.Context, network, hostPort string) (net.Conn, error) {
-	var conn net.Conn
-	var err error
-
+func (h *Handler) dialContextCheckACL(ctx context.Context, network, hostPort string) (net.Conn, error) {
 	if network != "tcp" && network != "tcp4" && network != "tcp6" {
 		// return nil, &proxyError{S: "Network " + network + " is not supported", Code: http.StatusBadRequest}
 		return nil, caddyhttp.Error(http.StatusBadRequest,
 			fmt.Errorf("network %s is not supported", network))
 	}
-
 	if h.upstream != nil {
 		// if upstreaming -- do not resolve locally nor check acl
-		conn, err = h.dialContext(ctx, network, hostPort)
-		if err != nil {
-			// return conn, &proxyError{S: err.Error(), Code: http.StatusBadGateway}
-			return conn, caddyhttp.Error(http.StatusBadGateway, err)
+		conn, err := h.dialContext(ctx, network, hostPort)
+		if err != nil || conn == nil || ctx.Err() != nil {
+			if conn != nil {
+				conn.Close()
+			}
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
+			return nil, tcpDialError(err)
 		}
 		return conn, nil
 	}
+	// An upstream HTTP/2 dialer retains the request context for the tunnel's
+	// lifetime. The establishment-only deadline belongs to direct TCP dials.
+	timeout := time.Duration(h.DialTimeout)
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	host, port, _ := net.SplitHostPort(hostPort)
 	resolved, failure := h.resolveTargetCheckACL(ctx, hostPort)
 	if failure != nil {
+		if failure.kind == targetPolicyLookupFailed {
+			return nil, tcpDialError(failure.cause)
+		}
 		return nil, legacyTargetPolicyError(failure, host, port)
 	}
-
-	// This is net.Dial's default behavior: if the host resolves to multiple IP addresses,
-	// Dial will try each IP address in order until one succeeds
-	for _, address := range resolved.addresses {
-		conn, err := h.dialContext(ctx, network, address)
-		if err == nil {
-			return conn, nil
-		}
+	conn, err := h.dialTCPAddresses(ctx, network, resolved.addresses)
+	if err != nil {
+		return nil, tcpDialError(err)
 	}
-
-	return nil, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("no allowed IP addresses for %s", host))
+	return conn, nil
 }
 
 func (h Handler) hostIsAllowed(hostname string, ip net.IP) bool {

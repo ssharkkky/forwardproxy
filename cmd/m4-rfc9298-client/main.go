@@ -348,6 +348,14 @@ func runMatrix(ctx context.Context, c *client) error {
 }
 
 func runLimits(ctx context.Context, c *client) error {
+	// Admission is per client IP, across QUIC connections. Keep each
+	// connection below the transport's independent 100-stream default.
+	second, err := dialClient(ctx, c.proxy, "", "")
+	if err != nil {
+		return err
+	}
+	defer second.close()
+	second.auth = c.auth
 	echo, err := startEcho("udp4", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -360,8 +368,12 @@ func runLimits(ctx context.Context, c *client) error {
 			closeStream(stream)
 		}
 	}()
-	for range 128 {
-		stream, status, err := c.open(ctx, "127.0.0.1", port)
+	for i := range 128 {
+		owner := c
+		if i >= 64 {
+			owner = second
+		}
+		stream, status, err := owner.open(ctx, "127.0.0.1", port)
 		if err != nil || status != http.StatusOK {
 			return fmt.Errorf("association admission %d: status=%d err=%v", len(streams)+1, status, err)
 		}

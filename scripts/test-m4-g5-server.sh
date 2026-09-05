@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 go_bin=${GO_BIN:-/Users/stoneshi/.local/naive-m4/go1.25.12/bin/go}
 caddy_bin=${CADDY_BIN:-"$repo_root/build/m4-caddy"}
+caddy_config=${M4_CADDY_CONFIG:-"$repo_root/tests/m4/Caddyfile"}
 proxy_address=${M4_PROXY_ADDRESS:-127.0.0.1:19443}
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/naive-m4-g5.XXXXXX")
 client_bin="$tmp_dir/m4-rfc9298-client"
@@ -31,7 +32,7 @@ start_server() {
 	M4_ACCESS_LOG="$access_log" \
 	XDG_DATA_HOME="$tmp_dir/data" \
 	XDG_CONFIG_HOME="$tmp_dir/config" \
-	"$caddy_bin" run --config "$repo_root/tests/m4/Caddyfile" --adapter caddyfile \
+	"$caddy_bin" run --config "$caddy_config" --adapter caddyfile \
 		>>"$server_log" 2>&1 &
 	server_pid=$!
 	for _ in $(seq 1 40); do
