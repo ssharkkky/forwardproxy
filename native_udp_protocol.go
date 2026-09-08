@@ -203,28 +203,36 @@ type resolvedTarget struct {
 	addresses []string
 }
 
-func (h Handler) resolveTargetCheckACL(ctx context.Context, hostPort string) (resolvedTarget, *targetPolicyFailure) {
+// prepareTargetPolicy validates the CONNECT target before any resolution
+// or dial: host/port split, port policy, and domain-level ACL decisions.
+// It is shared by the TCP and CONNECT-UDP paths.
+func (h Handler) prepareTargetPolicy(hostPort string) (string, string, *targetPolicyFailure) {
 	host, port, err := net.SplitHostPort(hostPort)
 	if err != nil {
-		return resolvedTarget{}, &targetPolicyFailure{kind: targetPolicyMalformed, cause: err}
+		return host, port, &targetPolicyFailure{kind: targetPolicyMalformed, cause: err}
 	}
 	if !h.portIsAllowed(port) {
-		return resolvedTarget{}, &targetPolicyFailure{kind: targetPolicyPortDenied}
+		return host, port, &targetPolicyFailure{kind: targetPolicyPortDenied}
 	}
-
 	for _, rule := range h.aclRules {
 		if _, ok := rule.(*aclDomainRule); !ok {
 			continue
 		}
 		switch rule.tryMatch(nil, host) {
 		case aclDecisionDeny:
-			return resolvedTarget{}, &targetPolicyFailure{kind: targetPolicyDomainDenied}
+			return host, port, &targetPolicyFailure{kind: targetPolicyDomainDenied}
 		case aclDecisionAllow:
-			goto resolve
+			return host, port, nil
 		}
 	}
+	return host, port, nil
+}
 
-resolve:
+func (h Handler) resolveTargetCheckACL(ctx context.Context, hostPort string) (resolvedTarget, *targetPolicyFailure) {
+	host, port, failure := h.prepareTargetPolicy(hostPort)
+	if failure != nil {
+		return resolvedTarget{}, failure
+	}
 	lookup := h.lookupIP
 	if lookup == nil {
 		lookup = net.DefaultResolver.LookupIPAddr

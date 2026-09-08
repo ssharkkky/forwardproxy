@@ -23,13 +23,40 @@ func tcpTestHandler(addresses ...string) Handler {
 		HideIP:      true,
 		DialTimeout: caddy.Duration(30 * time.Second),
 		aclRules:    []aclRule{&aclAllRule{allow: true}},
-		lookupIP: func(context.Context, string) ([]net.IPAddr, error) {
+		lookupIPFamily: func(_ context.Context, family, _ string) ([]net.IPAddr, error) {
 			var result []net.IPAddr
 			for _, address := range addresses {
-				result = append(result, net.IPAddr{IP: net.ParseIP(address)})
+				ip := net.ParseIP(address)
+				if family == "ip4" && ip.To4() == nil {
+					continue
+				}
+				if family == "ip6" && ip.To4() != nil {
+					continue
+				}
+				result = append(result, net.IPAddr{IP: ip})
 			}
 			return result, nil
 		},
+	}
+}
+
+// delayFamilyLookup pins the per-family arrival order under synctest's
+// virtual clock: each family answers after the given virtual delay, so
+// the first-arrival family (and thus the primary candidate family) is
+// deterministic instead of a goroutine race.
+func delayFamilyLookup(h *Handler, v4Delay, v6Delay time.Duration) {
+	base := h.lookupIPFamily
+	h.lookupIPFamily = func(ctx context.Context, family, host string) ([]net.IPAddr, error) {
+		delay := v4Delay
+		if family == "ip6" {
+			delay = v6Delay
+		}
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return base(ctx, family, host)
 	}
 }
 
@@ -51,14 +78,29 @@ func tcpConnectRequest(ctx context.Context, version int) *http.Request {
 }
 
 func TestTCPHappyEyeballsBlackhole(t *testing.T) {
-	for _, addresses := range [][]string{
-		{"2001:db8::1", "2001:db8::2", "192.0.2.1"},
-		{"192.0.2.1", "192.0.2.2", "2001:db8::1"},
-		{"192.0.2.1", "192.0.2.2"},
-	} {
-		t.Run(addresses[0]+"_"+addresses[len(addresses)-1], func(t *testing.T) {
+	cases := []struct {
+		addresses []string
+		// per-family virtual arrival delays pinning the first-arrival
+		// family (the legacy merged fixture modeled this with list order)
+		v4Delay, v6Delay time.Duration
+	}{
+		// v6 answers first: v6a is the first candidate (blackholed),
+		// v4a wins at the stagger.
+		{[]string{"2001:db8::1", "2001:db8::2", "192.0.2.1"}, 10 * time.Millisecond, 0},
+		// v4 answers first: v4a is the first candidate (blackholed),
+		// v6a wins at the stagger.
+		{[]string{"192.0.2.1", "192.0.2.2", "2001:db8::1"}, 0, 10 * time.Millisecond},
+		// v4-only answer.
+		{[]string{"192.0.2.1", "192.0.2.2"}, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.addresses[0]+"_"+tc.addresses[len(tc.addresses)-1], func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
+				addresses := tc.addresses
 				h := tcpTestHandler(addresses...)
+				if tc.v4Delay > 0 || tc.v6Delay > 0 {
+					delayFamilyLookup(&h, tc.v4Delay, tc.v6Delay)
+				}
 				winner, peer := net.Pipe()
 				defer peer.Close()
 				defer winner.Close()
@@ -123,6 +165,8 @@ func TestTCPDialFailureStatus(t *testing.T) {
 func TestTCPHappyEyeballsImmediateFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := tcpTestHandler("2001:db8::1", "192.0.2.1")
+		// v6 answers first so v6a is the deterministic first candidate.
+		delayFamilyLookup(&h, 10*time.Millisecond, 0)
 		winner, peer := net.Pipe()
 		defer peer.Close()
 		defer winner.Close()
@@ -143,6 +187,8 @@ func TestTCPHappyEyeballsImmediateFailure(t *testing.T) {
 func TestTCPHappyEyeballsLateSuccessClosed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := tcpTestHandler("2001:db8::1", "192.0.2.1")
+		// v6 answers first so v6a is the deterministic first candidate.
+		delayFamilyLookup(&h, 10*time.Millisecond, 0)
 		winner, winnerPeer := net.Pipe()
 		defer winnerPeer.Close()
 		defer winner.Close()
@@ -197,14 +243,26 @@ func TestTCPHappyEyeballsACLAndNetwork(t *testing.T) {
 				attempts = append(attempts, address)
 				return nil, errors.New("refused")
 			}
-			_, err = h.dialContextCheckACL(context.Background(), network, "target.example:443")
-			requireTCPStatus(t, err, http.StatusBadGateway)
-			want := map[string][]string{
-				"tcp":  {"[2001:db8::1]:443", "192.0.2.2:443"},
-				"tcp4": {"192.0.2.2:443"}, "tcp6": {"[2001:db8::1]:443"},
-			}[network]
-			if !reflect.DeepEqual(attempts, want) {
-				t.Fatalf("attempts = %v, want %v", attempts, want)
+			run := func() {
+				_, err := h.dialContextCheckACL(context.Background(), network, "target.example:443")
+				requireTCPStatus(t, err, http.StatusBadGateway)
+				want := map[string][]string{
+					"tcp":  {"[2001:db8::1]:443", "192.0.2.2:443"},
+					"tcp4": {"192.0.2.2:443"}, "tcp6": {"[2001:db8::1]:443"},
+				}[network]
+				if !reflect.DeepEqual(attempts, want) {
+					t.Fatalf("attempts = %v, want %v", attempts, want)
+				}
+			}
+			if network == "tcp" {
+				// v6 answers first so v6a is the deterministic first
+				// candidate (v4a is ACL-denied at admission).
+				synctest.Test(t, func(t *testing.T) {
+					delayFamilyLookup(&h, 10*time.Millisecond, 0)
+					run()
+				})
+			} else {
+				run()
 			}
 		})
 	}
@@ -214,7 +272,7 @@ func TestTCPDialDeadlineIncludesDNS(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := tcpTestHandler()
 		h.DialTimeout = caddy.Duration(time.Second)
-		h.lookupIP = func(ctx context.Context, _ string) ([]net.IPAddr, error) {
+		h.lookupIPFamily = func(ctx context.Context, _, _ string) ([]net.IPAddr, error) {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
