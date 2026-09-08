@@ -19,6 +19,9 @@ func TestM4G0ContractBaseline(t *testing.T) {
 	if connectUDPContextID != 0 {
 		t.Fatalf("v1 only supports Context ID 0")
 	}
+	if connectUDPMaxAssociations != 512 || connectUDPMaxPerClient != 128 {
+		t.Fatalf("unexpected association limits: total=%d per_client=%d", connectUDPMaxAssociations, connectUDPMaxPerClient)
+	}
 	if connectUDPMaxAssociations <= connectUDPMaxPerClient || connectUDPMaxPerClient <= 0 {
 		t.Fatalf("invalid association limits")
 	}
