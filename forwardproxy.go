@@ -102,7 +102,11 @@ type Handler struct {
 	// overridden dialContext allows us to redirect requests to upstream proxy
 	dialContext func(ctx context.Context, network, address string) (net.Conn, error)
 	lookupIP    func(ctx context.Context, host string) ([]net.IPAddr, error)
-	upstream    *url.URL // address of upstream proxy
+	// lookupIPFamily resolves one address family ("ip4" or "ip6") so the
+	// TCP CONNECT path can race candidates from the first family that
+	// answers instead of waiting for the merged A+AAAA result.
+	lookupIPFamily func(ctx context.Context, family, host string) ([]net.IPAddr, error)
+	upstream       *url.URL // address of upstream proxy
 
 	connectUDPMu              sync.Mutex
 	connectUDPActive          int
@@ -135,6 +139,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	}
 	if h.lookupIP == nil {
 		h.lookupIP = net.DefaultResolver.LookupIPAddr
+	}
+	if h.lookupIPFamily == nil {
+		h.lookupIPFamily = lookupIPFamilyDefault
 	}
 	if h.connectUDPByClient == nil {
 		h.connectUDPByClient = make(map[string]int)
@@ -557,16 +564,19 @@ func (h *Handler) dialContextCheckACL(ctx context.Context, network, hostPort str
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	host, port, _ := net.SplitHostPort(hostPort)
-	resolved, failure := h.resolveTargetCheckACL(ctx, hostPort)
+	host, port, failure := h.prepareTargetPolicy(hostPort)
 	if failure != nil {
-		if failure.kind == targetPolicyLookupFailed {
-			return nil, tcpDialError(failure.cause)
-		}
 		return nil, legacyTargetPolicyError(failure, host, port)
 	}
-	conn, err := h.dialTCPAddresses(ctx, network, resolved.addresses)
+	conn, err := h.dialTCPIncremental(ctx, network, host, port)
 	if err != nil {
+		var policy *targetPolicyFailure
+		if errors.As(err, &policy) {
+			if policy.kind == targetPolicyLookupFailed {
+				return nil, tcpDialError(policy.cause)
+			}
+			return nil, legacyTargetPolicyError(policy, host, port)
+		}
 		return nil, tcpDialError(err)
 	}
 	return conn, nil
