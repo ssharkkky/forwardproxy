@@ -26,9 +26,15 @@ import (
 //   - per-family resolver order is preserved, and explicit tcp4/tcp6
 //     callers never dial the other family.
 //
-// The scheduling policy is unchanged from dialTCPAddresses (7307332):
-// 250 ms stagger, 100 ms minimum spacing after failures, 5 s per-attempt
-// cap, single winner, total deadline (including DNS) carried by ctx.
+// Scheduling reuses dialTCPAddresses' (7307332) window policy: 250 ms
+// stagger, 100 ms minimum spacing after an actual dial failure, 5 s
+// per-attempt cap, single winner, total deadline (including DNS) carried
+// by ctx. The dynamic-admission layer on top is new: a DNS wake (a late
+// family completing, including NODATA or failure, or the feed closing)
+// only re-checks candidate availability and termination - it never
+// starts a dial before the window measured from the last start has
+// elapsed, and a late success keeps racing until it is admitted, dialed,
+// or the race ends.
 // Error mapping is unchanged: DNS all-failed -> 502 (504 when the cause
 // is a deadline/timeout), all ACL-denied -> 403, all dials failed ->
 // 502/504.
@@ -259,6 +265,16 @@ func (h *Handler) dialTCPIncremental(ctx context.Context, network, host, port st
 		lastStart  time.Time
 		lastFamily byte
 		lastErr    error
+		// nextReadyAt is the earliest moment the next dial may start.
+		// It is zero until the first start, when the first admitted
+		// candidate dials immediately; after a start it is always
+		// measured from that start: +250 ms normally, shortened to
+		// +100 ms only by an actual dial failure (the same window
+		// semantics as dialTCPAddresses). A DNS wake (a late family
+		// completing, including NODATA or failure, or the feed closing)
+		// never shortens or satisfies this window; it only makes the
+		// scheduler re-check candidate availability and termination.
+		nextReadyAt time.Time
 	)
 	timer := time.NewTimer(tcpFallbackDelay)
 	if !timer.Stop() {
@@ -278,7 +294,7 @@ func (h *Handler) dialTCPIncremental(ctx context.Context, network, host, port st
 	}
 
 	for {
-		due := started == 0 || time.Since(lastStart) >= tcpMinimumDelay
+		due := nextReadyAt.IsZero() || !time.Now().Before(nextReadyAt)
 		if addr, closed, empty := feed.advance(due, lastFamily); addr != "" {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -288,6 +304,7 @@ func (h *Handler) dialTCPIncremental(ctx context.Context, network, host, port st
 			pending++
 			lastStart = time.Now()
 			lastFamily = familyByte(addr)
+			nextReadyAt = lastStart.Add(tcpFallbackDelay)
 			timer.Reset(tcpFallbackDelay)
 			continue
 		} else if closed && empty && pending == 0 {
@@ -307,8 +324,13 @@ func (h *Handler) dialTCPIncremental(ctx context.Context, network, host, port st
 			}
 			lastErr = res.err
 			// Accelerate failures while retaining the minimum spacing,
-			// mirroring the production scheduler.
-			timer.Reset(max(0, tcpMinimumDelay-time.Since(lastStart)))
+			// mirroring dialTCPAddresses: the window shortens to
+			// lastStart + 100 ms, and a late failure re-arms the timer
+			// to fire immediately.
+			if ready := lastStart.Add(tcpMinimumDelay); ready.Before(nextReadyAt) {
+				nextReadyAt = ready
+				timer.Reset(max(0, time.Until(nextReadyAt)))
+			}
 		case <-feed.wake:
 		case <-timer.C:
 		}

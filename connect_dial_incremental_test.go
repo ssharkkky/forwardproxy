@@ -21,14 +21,19 @@ import (
 )
 
 // incrDial records dial attempts. The configured winner returns a live
-// pipe connection; with a winner configured, non-winners are blackholed
-// until their dial context is canceled; with no winner, non-winners fail
-// immediately (connection refused).
+// pipe connection; failNow addresses fail immediately (connection
+// refused); with blackhole set every address blocks until its dial
+// context is canceled; otherwise, with a winner configured, non-winners
+// are blackholed until their dial context is canceled, and with no
+// winner, non-winners fail immediately (connection refused).
 type incrDial struct {
-	mu       sync.Mutex
-	attempts []string
-	tFirst   time.Time
-	winner   string
+	mu        sync.Mutex
+	attempts  []string
+	starts    []time.Time
+	tFirst    time.Time
+	winner    string
+	blackhole bool
+	failNow   map[string]bool
 }
 
 func (d *incrDial) dial(ctx context.Context, _, address string) (net.Conn, error) {
@@ -38,18 +43,32 @@ func (d *incrDial) dial(ctx context.Context, _, address string) (net.Conn, error
 		d.tFirst = now
 	}
 	d.attempts = append(d.attempts, address)
+	d.starts = append(d.starts, now)
 	isWinner := address == d.winner
+	failNow := d.failNow[address]
+	blackhole := d.blackhole
 	d.mu.Unlock()
 	if isWinner {
 		conn, peer := net.Pipe()
 		go peer.Close()
 		return conn, nil
 	}
-	if d.winner == "" {
+	if failNow {
+		return nil, errors.New("refused")
+	}
+	if !blackhole && d.winner == "" {
 		return nil, errors.New("refused")
 	}
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+// attemptsAndStarts returns a copy of the recorded dial attempts with
+// their start times (virtual time under synctest).
+func (d *incrDial) attemptsAndStarts() ([]string, []time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.attempts...), append([]time.Time(nil), d.starts...)
 }
 
 // familyFixture simulates one per-family resolver answer.
@@ -432,6 +451,85 @@ func TestTCPFamilyFeedPopOrder(t *testing.T) {
 		want := []string{"[2001:db8::10]:1", "[2001:db8::11]:1"}
 		if got := popAll(nil, []string{"[2001:db8::10]:1", "[2001:db8::11]:1"}); !reflect.DeepEqual(got, want) {
 			t.Fatalf("pops = %v, want %v", got, want)
+		}
+	})
+}
+
+// A late family answering while the first dial is still in flight must
+// not start the second dial before the full 250 ms stagger has elapsed.
+func TestTCPDNSIncrementalLateAnswerHoldsStagger(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		v4 := &familyFixture{kind: "answer", delay: 10 * time.Millisecond, addrs: []string{"192.0.2.10"}}
+		v6 := &familyFixture{kind: "answer", delay: 150 * time.Millisecond, addrs: []string{"2001:db8:10::10"}}
+		d := &incrDial{winner: "[2001:db8:10::10]:443"}
+		h := incrHandler(v4, v6, d)
+
+		start := time.Now()
+		conn, err := h.dialContextCheckACL(context.Background(), "tcp", "target.example:443")
+		if err != nil || conn == nil {
+			t.Fatalf("dial = %v, %v; want success", conn, err)
+		}
+		conn.Close()
+		got, starts := d.attemptsAndStarts()
+		want := []string{"192.0.2.10:443", "[2001:db8:10::10]:443"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("attempts = %v, want %v", got, want)
+		}
+		if gap := starts[1].Sub(starts[0]); gap != 250*time.Millisecond {
+			t.Fatalf("second dial started %v after the first; the 150ms v6 wake must not shorten the 250ms stagger", gap)
+		}
+		if elapsed := time.Since(start); elapsed != 260*time.Millisecond {
+			t.Fatalf("elapsed = %v, want 260ms (10ms DNS + 250ms stagger)", elapsed)
+		}
+	})
+}
+
+// A late family's NODATA (failure wake, closing the feed) must neither
+// start an early dial nor end the race while the first dial is in flight.
+func TestTCPDNSIncrementalNodataWakeNoEarlyDial(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		v4 := &familyFixture{kind: "answer", delay: 10 * time.Millisecond, addrs: []string{"192.0.2.10"}}
+		v6 := &familyFixture{kind: "nodata", delay: 150 * time.Millisecond}
+		d := &incrDial{blackhole: true}
+		h := incrHandler(v4, v6, d)
+
+		start := time.Now()
+		_, err := h.dialContextCheckACL(context.Background(), "tcp", "target.example:443")
+		requireTCPStatus(t, err, http.StatusGatewayTimeout)
+		got, _ := d.attemptsAndStarts()
+		if !reflect.DeepEqual(got, []string{"192.0.2.10:443"}) {
+			t.Fatalf("attempts = %v, want exactly the first-family dial", got)
+		}
+		want := 10*time.Millisecond + 5*time.Second
+		if elapsed := time.Since(start); elapsed != want {
+			t.Fatalf("elapsed = %v, want %v (the 150ms NODATA wake must wait out the in-flight attempt's 5s cap)", elapsed, want)
+		}
+	})
+}
+
+// When the first family's only address fails, the race must stay open
+// across the failure window while the other family is still in flight,
+// and dial the late success as soon as it arrives.
+func TestTCPDNSIncrementalLateDNSSuccess(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		v4 := &familyFixture{kind: "answer", delay: 10 * time.Millisecond, addrs: []string{"192.0.2.10"}}
+		v6 := &familyFixture{kind: "answer", delay: 300 * time.Millisecond, addrs: []string{"2001:db8:10::10"}}
+		d := &incrDial{winner: "[2001:db8:10::10]:443", failNow: map[string]bool{"192.0.2.10:443": true}}
+		h := incrHandler(v4, v6, d)
+
+		start := time.Now()
+		conn, err := h.dialContextCheckACL(context.Background(), "tcp", "target.example:443")
+		if err != nil || conn == nil {
+			t.Fatalf("late DNS success must still win: %v", err)
+		}
+		conn.Close()
+		got, _ := d.attemptsAndStarts()
+		want := []string{"192.0.2.10:443", "[2001:db8:10::10]:443"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("attempts = %v, want %v (no early termination after the v4 failure)", got, want)
+		}
+		if elapsed := time.Since(start); elapsed != 300*time.Millisecond {
+			t.Fatalf("elapsed = %v, want 300ms (v4 failed at 10ms, v6 admitted and dialed at 300ms after the 100ms failure window)", elapsed)
 		}
 	})
 }
